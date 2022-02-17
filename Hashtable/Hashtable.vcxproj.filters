@@ -15,7 +15,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="array.cpp">
+    <ClCompile Include="hashtable.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

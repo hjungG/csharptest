@@ -15,7 +15,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="array.cpp">
+    <ClCompile Include="queue.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

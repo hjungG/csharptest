@@ -1,0 +1,189 @@
+trigger: none
+
+schedules:
+- cron: "0 11 * * *"
+  displayName: Daily at 7AM EST
+  branches:
+    include:
+    - develop
+  always: true
+   
+variables:
+  - name: ProcessEmailReportName
+    value: "ProcessEmailReport"
+  - name: TotalEmailReportName
+    value: "TotalEmailReport"
+  - group: gbl-polaris-variable-group
+  - group: gbl-polaris-reporting
+
+jobs:
+- job: GenerateEmailStatusReport
+  pool: 
+    name: glb-polaris-dev
+  steps:
+  - task: PowerShell@2
+    displayName: 'Generate Reports'
+    inputs:
+      targetType: filePath
+      filePath: '$(Build.SourcesDirectory)/Reporting/EmailStatus/EmailStatusReport.ps1'
+      arguments: -ServerName '$(DEV_DB_SERVER_NAME)' -Username '$(DB_USERNAME)' -Password '$(DEV_DB_PASSWORD)' -ProcessEmailReportName '$(ProcessEmailReportName)' -TotalEmailReportName '$(TotalEmailReportName)'
+      
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Process Email Report' 
+    condition: and(succeeded(), eq(variables['ProcessFileExists'], 'True'))
+    inputs:
+        PathtoPublish: '$(Build.SourcesDirectory)\$(ProcessEmailReportName).csv'
+        ArtifactName: 'Report'
+        publishLocation: 'Container' 
+
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Total Email Report' 
+    condition: and(succeeded(), eq(variables['TotalFileExists'], 'True')) 
+    inputs:
+        PathtoPublish: '$(Build.SourcesDirectory)\$(TotalEmailReportName).csv'
+        ArtifactName: 'Report'
+        publishLocation: 'Container'     
+
+- job: SendEmail
+  dependsOn:
+    - GenerateEmailStatusReport
+  pool: 
+    name: glb-polaris-Ops
+  steps:
+  - powershell: |
+        $ProcessEmailReportPath = ($env:ProcessEmailReportPath)
+        $TotalEmailReportPath = ($env:TotalEmailReportPath)
+        if ( Test-Path -Path $TotalEmailReportPath ){
+          Remove-Item $TotalEmailReportPath -Force
+          Write-Host "Removed - $TotalEmailReportPath"
+        }
+
+        if ( Test-Path -Path $ProcessEmailReportPath ){
+          Remove-Item $ProcessEmailReportPath -Force
+          Write-Host "Removed - $ProcessEmailReportPath"
+        }        
+
+    failOnStderr: true    
+    displayName: 'Cleanup files in workpsace'
+    env:
+      ProcessEmailReportPath: $(Pipeline.Workspace)/Report/$(ProcessEmailReportName).csv
+      TotalEmailReportPath: $(Pipeline.Workspace)/Report/$(TotalEmailReportName).csv
+
+  - download: current
+    displayName: 'Download Report'
+    artifact: Report
+    continueOnError: true
+
+  - powershell: |
+        . .\SendMail.ps1
+        . .\CreateSnowInc.ps1                              
+
+        $SmtpServer = ($env:SmtpServer)
+        $ToEmail = ($env:ToEmail)
+        $FromEmail = ($env:FromEmail)
+        $SnowUsername = ($env:SnowUsername)
+        $SnowPassword = ($env:SnowPassword)
+        $AssignmentGroupSysId = ($env:AssignmentGroupSysId)
+        $ServiceUserSysId = ($env:ServiceUserSysId)
+        $ConfigurationItemSysId = ($env:ConfigurationItemSysId)
+        $UserLocationSysId = ($env:UserLocationSysId)
+        $ProcessEmailReportPath = ($env:ProcessEmailReportPath)
+        $TotalEmailReportPath = ($env:TotalEmailReportPath)
+        $Environment = ($env:Environment)
+        $EnableSnowIntegration = ($env:EnableSnowIntegration)      
+
+        $css = @"
+        <style>
+        h1, h5 { text-align: left; font-family: Times New Roman; }
+        table { margin-left: 0px; font-family: Times New Roman; box-shadow: 10px 10px 5px #888 }
+        th { font-family: Times New Roman; font-size: 13px; text-align: center; background: #F5A041; width: auto; border: 1px solid #17202A }
+        td { font-family: Times New Roman; font-size: 13px; text-align: center; border: 1px solid #17202A; width: auto }
+        </style>
+        "@
+
+        $Subject = "[$Environment] Global Polaris Email Status Report - $(Get-Date -Format "dd-MM-yyyy")"
+        $ShortDescription = "Global polaris email failures - $Environment"
+
+        if ( Test-Path -Path $TotalEmailReportPath ){
+          $ErrorCount = (Get-Content $TotalEmailReportPath | ConvertFrom-Csv | Measure-Object "SentFailure" -Sum)
+          $ErrorCount = $ErrorCount.Sum
+
+          # Create or update incident ticket if there are email failures
+          if ( ($ErrorCount -gt 0) -and ($EnableSnowIntegration -eq "true") ){
+              Write-Host "Assignment Group sys id - $AssignmentGroupSysId"
+              Write-Host "ShortDescription - $ShortDescription"
+              $IncidentID, $IncidentNum = (Get-Ticket $SnowUsername $SnowPassword $AssignmentGroupSysId $ShortDescription)
+              Write-Host "Incident sys id - $IncidentID"
+              Write-Host "Incident number - $IncidentNum"
+              if ($IncidentID){                  
+                  $UpdateWorkNotes = "$ErrorCount emails not sent successfully in $Environment environment on $((Get-Date).AddDays(-1).ToString("dd-MM-yyyy"))"
+                  Update-Ticket $SnowUsername $SnowPassword $IncidentID $UpdateWorkNotes
+              }
+              else
+              {
+                  Write-Host "Assignment Group sys id - $AssignmentGroupSysId"
+                  $Description = "$ErrorCount emails not sent successfully in global polaris $Environment environment on $((Get-Date).AddDays(-1).ToString("dd-MM-yyyy")).                  
+                  Please check the issue."
+                  Create-Ticket $SnowUsername $SnowPassword $ServiceUserSysId $AssignmentGroupSysId $ConfigurationItemSysId $UserLocationSysId $ShortDescription $Description
+              }
+          }
+              
+          $Body = "<p>Please find the email status report below for $((Get-Date).AddDays(-1).ToString("dd-MM-yyyy")).</p>
+          <b><u>Environment:</u></b> $Environment <br>"
+
+          if ( Test-Path -Path $ProcessEmailReportPath ){
+              $Body += "<br><b><u>Email Timer Process Report:</u></b> <br>"
+              [string]$EmailBody = Import-CSV $ProcessEmailReportPath | ConvertTo-Html -Head $css -Body $Body        
+          }      
+
+          $EmailBody += "<br> <b><u>Email Sent Status Report:</u></b> <br>"
+          [string]$EmailBody1 = Import-CSV $TotalEmailReportPath | ConvertTo-Html -Head $css -Body $EmailBody
+
+          if ( $ErrorCount -gt 0 ){ 
+            if ( $EnableSnowIntegration -eq "true" ){
+              if ($IncidentID){
+                $EmailBody1 += "<p>$ErrorCount emails not sent yesterday, updated status in the incident - $IncidentNum.</p>"
+              }
+              else
+              {
+                $IncidentID, $IncidentNum = (Get-Ticket $SnowUsername $SnowPassword $AssignmentGroupSysId $ShortDescription)
+                $EmailBody1 += "<p>$ErrorCount emails not sent yesterday, created new incident - $IncidentNum
+                and assigned to global polaris ops SNOW group.</p>"
+              }
+            }
+            else
+            {
+              $Subject = "[ALERT][$Environment] Global Polaris Email Status Report - $(Get-Date -Format "dd-MM-yyyy")"
+              $EmailBody1 += "<p>$ErrorCount emails not sent yesterday.</p>"
+            }
+          }
+          else
+          {
+             $EmailBody1 += "<p>All  emails sent successfully yesterday.</p>"
+          }
+          $EmailBody1 += "<p>Thanks & Regards,<br> Global Polaris Ops Team</p>"
+        }
+        else
+        {
+          $EmailBody1 = "<p>No emails triggered yesterday.</p>"
+          $EmailBody1 += "<p>Thanks & Regards,<br> Global Polaris Ops Team</p>"         
+        }
+        SendMail -SmtpServer $SmtpServer -Subject $Subject -MailBody $EmailBody1 -FromEmail $FromEmail -ToEmail $ToEmail
+
+    failOnStderr: true
+    condition: succeededOrFailed()
+    displayName: 'Send Mail'
+    env:
+      SmtpServer: $(SMTP_HOST_CENTRAL)
+      FromEmail: $(FROM_EMAIL_ADDRESS)
+      ToEmail: $(EMAIL_REPORT_TO_EMAIL_ADDRESS_LIST_DEV)
+      SnowUsername: $(SNOW_USERNAME)
+      SnowPassword: $(SNOW_PASSWORD)
+      AssignmentGroupSysId: $(OPS_ASSIGNMENT_GROUP_SYSID)
+      ServiceUserSysId: $(SERVICE_USER_SYSID)
+      ConfigurationItemSysId: $(CONFIGURATION_ITEM_SYSID)
+      EnableSnowIntegration: $(ENABLE_SNOW_INTEGRATION)
+      UserLocationSysId: $(USER_LOCATION_SYSID)
+      Environment: Dev
+      ProcessEmailReportPath: $(Pipeline.Workspace)/Report/$(ProcessEmailReportName).csv
+      TotalEmailReportPath: $(Pipeline.Workspace)/Report/$(TotalEmailReportName).csv      

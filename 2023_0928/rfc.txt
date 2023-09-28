@@ -1,0 +1,525 @@
+Param(
+	[Parameter(Mandatory=$true)]
+	[string]$token,
+    [Parameter(Mandatory=$true)]
+	[string]$refreshToken,
+    [Parameter(Mandatory=$true)]
+	[string]$clientId,
+    [Parameter(Mandatory=$true)]
+	[string]$clientSecret,
+    [Parameter(Mandatory=$true)]
+	[string]$redirectUrl,
+    [Parameter(Mandatory=$true)]
+	[string]$code,
+    [Parameter(Mandatory=$true)]
+	[string]$grantType,
+    [Parameter(Mandatory=$true)]
+	[string]$apiKey,
+    [Parameter(Mandatory=$true)]
+	[string]$spreadsheetid,
+    [Parameter(Mandatory=$true)]
+	[string]$snowUserid,
+    [Parameter(Mandatory=$true)]
+	[string]$snowpassword,
+    [Parameter(Mandatory=$true)]
+	[string]$snowProxy,
+    [Parameter(Mandatory=$true)]
+	[string]$snowApiKey,
+    [Parameter(Mandatory=$true)]
+	[string]$snowApiKeySecret,
+    [Parameter(Mandatory=$true)]
+	[string]$assignedTo,
+    [Parameter(Mandatory=$true)]
+	[string]$changeCoordinator,
+    [Parameter(Mandatory=$true)]
+	[string]$configuratinItem,
+    [Parameter(Mandatory=$true)]
+	[string]$assignmentGroup,
+    [Parameter(Mandatory=$true)]
+	[string]$impact,
+    [Parameter(Mandatory=$true)]
+	[string]$urgency,
+    [Parameter(Mandatory=$true)]
+	[string]$priority,
+    #[Parameter(Mandatory=$true)]
+	#[string]$SENDGRID_API_KEY,
+	[Parameter(Mandatory=$true)]
+	[string]$serviceNowChangeDetailsPageURL,
+	[Parameter(Mandatory=$true)]
+	[string]$relatedChangesApi,
+	[Parameter(Mandatory=$false)]
+	[string]$relatedChanges,
+	[Parameter(Mandatory=$true)]
+	[string]$snowRFCCreateUrl,
+	[Parameter(Mandatory=$true)]
+	[string]$releaseSheetUrl,
+	[Parameter(Mandatory=$true)]
+	[string]$userAPI,
+    [Parameter(Mandatory=$true)]
+	[string]$requestedBy,
+    [Parameter(Mandatory=$true)]
+	[string]$changeCoordinatorGroup,
+    [Parameter(Mandatory=$true)]
+	[string]$changeAttachmentUrl,
+    [Parameter(Mandatory=$true)]
+	[string]$fromMailAddress,
+    [Parameter(Mandatory=$true)]
+	[string]$toMailAddress,
+    [Parameter(Mandatory=$true)]  
+    [string]$smtp
+)
+
+. ..\SendMail.ps1
+
+$shortDescription = ""
+$description = ""
+$environment = ""
+$justification = ""
+$implementationPlan = ""
+$rfcStartTime = ""
+$rfcEndTime = ""
+$outageStartTime = ""
+$outageEndTime = ""
+$testPlan = ""
+$testPlanStart = $false
+$impactAnalysis = $false
+$backoutPlan = $false
+$backoutPlanList = ""
+$backoutPlan = $false
+$changeId = ""
+$changeSystemId = ""
+$fileName = ""
+$fileContent = ""
+$exportXlsxFileName = ""
+$attachmentContent = ""
+$releaseSheetName = ""
+$changeNumberCell = $false
+$newChange = $true
+$changeDescription = ""
+$impactAnalysisFieldValue = ""
+$arrNum = ""
+$enableAttachReleaseSheet = $false
+
+function SendSmtpMail {
+    Write-Host 'Sending email with the RFC ID'
+    try {
+        $hyperlink = "$($serviceNowChangeDetailsPageURL)$($changeSystemId)"
+        $body = "<html><head><style>table{font-family: arial, sans-serif;  border-collapse: collapse;  width: 100%;} td, th {  border: 1px solid #dddddd;text-align:left;  padding: 8px;} tr:nth-child(even) {  background-color: #dddddd;}</style></head><body><p>Hi,</p><br/><p>New change created for $environment. Please find below the details:</p><table><tr><th>Title</th><th>Description</th></tr><tr><td>Change Id</td><td><a href='$hyperlink'>$changeId</a></td></tr><tr><td>Short description</td><td>$shortDescription</td></tr><tr><td>Release sheet</td><td>$releaseSheetUrl</td></tr>"
+        #$body = "<html><head></head><body><p>" + $changeId +" created for " + $environment + " environment.</p></body></html>"
+        if (!$existingChange) {
+            $subject = $environment.ToString().ToUpper()+": NEW CHANGE CREATED"
+        } else {
+            $subject = $environment.ToString().ToUpper()+": EXISTING CHANGE UPDATED"
+        }
+        #$email_response = Invoke-RestMethod -Uri https://api.sendgrid.com/v3/mail/send -Method Post -Headers @{"Authorization" = "Bearer $SENDGRID_API_KEY"; 'Accept'='application/json'; "Content-Type" = "application/json"} -Body "{""personalizations"": [{""to"": [{""email"": ""$toMailAddress""}]}],""from"": {""email"": ""$fromMailAddress""},""subject"": ""$subject"",""content"": [{""type"": ""text/html"", ""value"": ""$body""}]}"
+        SendMail -FromEmail $fromMailAddress -ToEmail $toMailAddress -Subject $subject -Mailbody $body -Smtp $smtp
+        Write-Host 'Mail Sent for new change created'
+    } catch {
+        $email_response = $_.Exception.Response.StatusCode.value__
+        Write-Host $_.Exception
+    }
+}
+function attachRelatedChange {
+    if ($relatedChanges.Trim()) {
+        Write-Host 'Function to attach related changes'
+        $relatedChanges = $relatedChanges.Split(',') 
+        foreach ($change in $relatedChanges) {
+            if ($change -eq $changId) {
+                Write-Host "Related change number", $change , "and original change number", $changeId , "is the same."
+            } else {          
+                $tempRelatedChangesApi = $relatedChangesApi,"?u_change_request_from=",$changeId,"&u_change_request_to=",$change -join ""
+                try {
+                    $rfcAttachResponse = Invoke-RestMethod $tempRelatedChangesApi -Credential $credential -Method GET -Headers $apiHeaders
+                    if ($rfcAttachResponse.result) {
+                        Write-Host $change , "is already attached with", $changeId
+                    } else {
+                        Write-Host "Attching", $change , " with", $changeId
+                        $params = @{"u_change_request_to" = $change;
+                        "u_change_request_from" = $changeId;}
+                        try {
+                            $relatedRFCAttachResponse = Invoke-RestMethod $relatedChangesApi -Credential $credential -Method POST -Body ($params|ConvertTo-Json) -Headers $apiHeaders
+                            Write-Host "Successfully attched related change", $change , " with", $changeId
+                        } catch {
+                            $rfcAttachResponseCode = $rfcAttachResponse.Exception.Response.StatusCode.value__
+	                        Write-Host "Snow api call to attach change is already attached $change with $changId ended with rfc error code: $rfcAttachResponseCode"
+	                        Write-Host "Snow api call to attach change is already attached $change with $changId ended with rfc error:  $_.Exception"                     
+                        }
+                    }      
+                } catch {
+                    $rfcAttachResponseCode = $rfcAttachResponse.Exception.Response.StatusCode.value__
+	                Write-Host "Snow api call to check if change is already attached with $changId with rfc error code: $rfcAttachResponseCode"
+	                Write-Host "Snow api call to check if change is already attached with $changeId with rfc error:  $_.Exception"            
+                }
+            }
+        }    
+    }
+}
+function updateReleaseSheetWithChangeId {
+        Write-Host 'Updating release sheet with RFC ID'
+        $range = "'$releaseSheetName'!B3:C3"
+        $appendURL = "https://sheets.googleapis.com/v4/spreadsheets/$spreadsheetid/values/" + $range + ":append?valueInputOption=USER_ENTERED&key=$apiKey"
+        $body = @{
+         "values"= @(
+           @(
+             $changeId
+           ),
+           @()
+         )
+        }
+        $body = ConvertTo-Json -InputObject $body
+        try {
+            $postReq = Invoke-RestMethod -Uri $appendURL -Method Post -Headers @{Authorization = "Bearer $token"} -ContentType 'application/json' -body $body
+            Write-Host 'Release sheet updated with RFC ID'
+        } catch {
+            $responseCode = $_.Exception.Response.StatusCode.value__
+            Write-Host "Releasesheet update api call error code : $responseCode"
+		    Write-Host "Releasesheet update api call error message : $_.Exception"
+        }    
+}
+
+Write-Host "Refreshing google api outh2 access token"
+$refreshTokenBody = @{
+    grant_type='refresh_token'
+    refresh_token=$refreshToken
+    client_id = $clientId
+    client_secret= $clientSecret
+}
+
+$ErrorActionPreference="stop"
+$accessTokenResponse = Invoke-RestMethod 'https://oauth2.googleapis.com/token' -Method Post -Body $refreshTokenBody -ContentType 'application/x-www-form-urlencoded'
+$token = $accessTokenResponse.access_token.replace("`n","")
+
+Write-Host "Calling google spreadsheet api to get spreadsheet content"
+$spreadsheetApi = "https://sheets.googleapis.com/v4/spreadsheets/$spreadsheetid", "?includeGridData=true&key=$apikey" -join ""
+
+$content = Invoke-RestMethod -Uri $spreadsheetApi -Method Get -Headers @{Authorization = "Bearer $token"} -ContentType 'application/json'
+
+Write-Host "Generating payload to create RFC with the values from spreadsheet"
+if ($content) {
+    if ($content.sheets.length -gt 0) {
+        if ($content.properties) {
+            if (-not ([string]::IsNullOrEmpty( $content.properties.title))) {
+                $fileName = $content.properties.title.replace("_","/").replace("&","/")
+                $exportXlsxFileName = "Release Sheet"
+                $exportXlsxFileName = "$exportXlsxFileName.xlsx"
+                $exportXlsxUrl = "https://docs.google.com/spreadsheets/d/$spreadsheetid/export?format=xlsx"
+                try {
+                    $exportMime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                    $fileContent = Invoke-RestMethod -Uri "https://www.googleapis.com/drive/v3/files/$spreadsheetid/export?mimeType=$exportMime" -Method Get -OutFile $exportXlsxFileName -Headers  @{Authorization = "Bearer $token"} -ContentType 'application/json'
+                } catch {
+                    $xlsxResponseCode = $_.Exception.Response.StatusCode.value__
+                    Write-Host "Google api call to download file error code : $xlsxResponseCode"
+                    Write-Host "Google api call to download file error exception : $_.Exception"
+                } finally{
+                    $attachmentContent = [IO.File]::ReadAllBytes("$exportXlsxFileName")
+                }
+                if (($fileName.ToUpper() -like "*STAGE*") -or ($fileName.ToUpper() -like "*UAT*")) {
+                    $environment = 'Stage'
+                } else {
+                    $environment = 'Prod'
+                }
+                $shortDescription = $fileName
+            }
+        }
+
+        foreach ($sheet in $content.sheets) {
+            if ($sheet.properties.title.ToUpper().Endswith("RELEASESHEET")) {
+                $releaseSheetName = $sheet.properties.title
+                Write-Host "Release notes sheet found"
+                foreach ($sheetDate in $sheet.data) {
+                    foreach ($rowData in $sheetDate.rowData) {
+                        if ($rowData.values[0]) {
+                            if (![string]::IsNullOrWhiteSpace($rowData.values[0].formattedValue)) {
+                                Write-Host $rowData.values[0].formattedValue
+                                switch -Wildcard ( $rowData.values[0].formattedValue.ToString().ToUpper() )
+                                {
+                                    '*RFC NUMBER*'
+                                    {
+                                        $changeNumberCell = $true
+                                    }
+                                    '*DESCRIPTION, SCHEDULE AND JUSTIFICATION*'
+                                    {
+                                        $changeDescription = $changeDescription , $rowData.values[1].formattedValue.Trim() , "`r`n" -join ""
+                                    }
+                                    '*CHANGE DESCRIPTION*'
+                                    {
+                                        $changeDescription = $changeDescription , $rowData.values[1].formattedValue.Trim() , "`r`n" -join ""
+                                    }
+                                    '*WHAT IS THE BENEFIT OF IMPLEMENTING THE RFC*'
+                                    {
+                                        $justification = $justification , $rowData.values[0].formattedValue.Trim() , ":`r`n" -join ""
+                                        $justification = $justification , $rowData.values[1].formattedValue.Trim() , "`r`n `r`n" -join ""
+                                    }
+                                    '*IMPACT IF THE CHANGE IS NOT IMPLEMENTED*'
+                                    {
+                                        $justification = $justification , $rowData.values[0].formattedValue.Trim() , ":`r`n" -join ""
+                                        $justification = $justification , $rowData.values[1].formattedValue.Trim() -join ""
+                                    }
+                                    '*PLANNED START DATE AND TIME*'
+                                    {
+                                        if (![string]::IsNullOrWhiteSpace($rowData.values[1].formattedValue)) {
+                                            try{
+                                                $tempString = $rowData.values[1].formattedValue.TrimEnd(" ET")
+                                                if ($tempString.Length -eq "01/01/2023 1:00 AM".Length) {
+                                                    $tempRfcStartTime = [datetime]::ParseExact($tempString, "MM/dd/yyyy h:mm tt", $null)
+                                                } else {
+                                                    $tempRfcStartTime = [datetime]::ParseExact($tempString, "MM/dd/yyyy hh:mm tt", $null)
+                                                }
+                                                $tempRfcStartTime = $tempRfcStartTime.AddHours(4)
+                                                $rfcStartTime = $tempRfcStartTime.ToString("yyyy-MM-dd HH:mm:ss")
+                                                Write-Host "rfcStartTime = $rfcStartTime"
+                                            } catch {
+                                                Write-Host 'Error in parsing scheduled start date, Format should be MM/dd/yyyy h:mm AM(or PM)'
+                                            }
+                                        }
+                                    }
+                                    '*PLANNED END DATE AND TIME*'
+                                    {
+                                        if (![string]::IsNullOrWhiteSpace($rowData.values[1].formattedValue)) {
+                                            try{
+                                                $tempString = $rowData.values[1].formattedValue.TrimEnd(" ET")
+                                                if ($tempString.Length -eq "01/01/2023 1:00 AM".Length) {
+                                                    $tempRfcEndTime = [datetime]::ParseExact($tempString, "MM/dd/yyyy h:mm tt", $null)
+                                                } else {
+                                                    $tempRfcEndTime = [datetime]::ParseExact($tempString, "MM/dd/yyyy hh:mm tt", $null)
+                                                }
+                                                $tempRfcEndTime = $tempRfcEndTime.AddHours(4)
+                                                $rfcEndTime = $tempRfcEndTime.ToString("yyyy-MM-dd HH:mm:ss")
+                                                Write-Host "rfcEndTime = $rfcEndTime"
+                                            } catch {
+                                                Write-Host 'Error in parsing scheduled start date, Format should be MM/dd/yyyy h:mm AM (or PM)'
+                                            }
+                                        }
+                                    }
+                                    '*OUTAGE START DATE AND TIME*'
+                                    {
+                                        if (![string]::IsNullOrWhiteSpace($rowData.values[1].formattedValue)) {
+                                            try{
+                                                $tempString = $rowData.values[1].formattedValue.TrimEnd(" ET")
+                                                if ($tempString.Length -eq "01/01/2023 1:00 AM".Length) {
+                                                    $tempOutageStartTime = [datetime]::ParseExact($tempString, "MM/dd/yyyy h:mm tt", $null)
+                                                } else {
+                                                    $tempOutageStartTime = [datetime]::ParseExact($tempString, "MM/dd/yyyy hh:mm tt", $null)
+                                                }
+                                                $tempOutageStartTime = $tempOutageStartTime.AddHours(4).AddSeconds(1)
+                                                $outageStartTime = $tempOutageStartTime.ToString("yyyy-MM-dd HH:mm:ss")
+                                                Write-Host "outageStartTime = $outageStartTime"
+                                            } catch {
+                                                Write-Host 'Error in parsing scheduled start date, Format should be MM/dd/yyyy h:mm AM (or PM)'
+                                            }
+                                        }
+                                    }
+                                    '*OUTAGE END DATE AND TIME*'
+                                    {
+                                        if (![string]::IsNullOrWhiteSpace($rowData.values[1].formattedValue)) {
+                                            try{
+                                                $tempString = $rowData.values[1].formattedValue.TrimEnd(" ET")
+                                                if ($tempString.Length -eq "01/01/2023 1:00 AM".Length) {
+                                                    $tempOutageEndTime = [datetime]::ParseExact($tempString, "MM/dd/yyyy h:mm tt", $null)
+                                                } else {
+                                                    $tempOutageEndTime = [datetime]::ParseExact($tempString, "MM/dd/yyyy hh:mm tt", $null)
+                                                }
+                                                $tempOutageEndTime = $tempOutageEndTime.AddHours(4).AddSeconds(-1)
+                                                $outageEndTime = $tempOutageEndTime.ToString("yyyy-MM-dd HH:mm:ss")
+                                                Write-Host "outageEndTime = $outageEndTime"
+                                            } catch {
+                                                Write-Host 'Error in parsing scheduled start date, Format should be MM/dd/yyyy h:mm AM (or PM)'
+                                            }
+                                        }
+                                    }
+                                    '*ARR#*'
+                                    {
+                                        if (![string]::IsNullOrWhiteSpace($rowData.values[1].formattedValue)) {
+                                            $arrNum = $rowData.values[1].formattedValue.Trim()
+                                        }
+                                    }
+                                    default
+                                    {
+                                    }
+                                }
+
+                                if ($changeNumberCell) {
+                                    if ($rowData.values[0].formattedValue.ToString().ToUpper() -like "*CHG*") {
+                                        $changeId = $rowData.values[0].formattedValue.substring($rowData.values[0].formattedValue.IndexOf("CHG"))
+                                        $changeNumberCell = $false
+                                        $newChange = $false
+                                    }
+                                }
+
+                                if ($rowData.values[0].formattedValue.ToString().ToUpper() -like "*IMPACT ANALYSIS:*") {
+                                    $impactAnalysis = $true
+                                    continue
+                                }
+
+                                if ($impactAnalysis) {
+                                    if ($rowData.values[0].formattedValue.ToString().ToUpper() -like "*BACKOUT PLAN (IN CASE OF FAILURES)*") {
+                                        $impactAnalysisFieldValue = $impactAnalysisFieldValue.Trim()
+                                        $impactAnalysis = $false
+                                        $backoutPlan = $true
+                                        continue
+                                    } else {
+                                        $impactAnalysisFieldValue = $impactAnalysisFieldValue , $rowData.values[0].formattedValue.Trim() , ":`r`n `r`n" -join ""
+                                        $impactAnalysisFieldValue = $impactAnalysisFieldValue , $rowData.values[1].formattedValue.Trim() , "`r`n `r`n" -join ""
+                                    }
+                                }
+
+                                if ($backoutPlan) {
+                                    if ($rowData.values[0].formattedValue.ToString().ToUpper() -like "*BACKOUT STEPS/ ROLLBACK RELEASES*") {
+                                        $line = $sheetDate.rowData.IndexOf($rowData) + 1
+                                        $backoutPlanList = $backoutPlanList , $rowData.values[0].formattedValue.Trim() , ":`r`n" -join ""
+                                        $backoutPlanList = $backoutPlanList , "Follow the backout plan in the attached release notes." , "`r`n `r`n" -join ""
+                                        $backoutPlanList = $backoutPlanList , "Refer : $fileName" , "`r`n `r`n" -join ""
+                                        $backoutPlanList = $backoutPlanList , "Row# $line Section#4.3" -join ""
+                                        $backoutPlan = $false
+                                        continue
+                                    } else {
+                                        $backoutPlanList = $backoutPlanList , $rowData.values[0].formattedValue.Trim() , ":`r`n `r`n" -join ""
+                                        $backoutPlanList = $backoutPlanList , $rowData.values[1].formattedValue.Trim() , "`r`n `r`n" -join ""
+                                    }
+                                }
+
+                                if ($rowData.values[0].formattedValue.ToString().ToUpper() -like "*TEST PLAN/TESTING CONTACTS*") {
+                                    $testPlanStart = $true
+                                    continue
+                                }
+                                if ($testPlanStart) {
+                                    if($rowData.values[0].formattedValue.ToUpper() -like "*<TechOps team to enter>*") {
+                                        $testPlanStart = $false
+                                    } else {
+                                        if( $rowData.values[0].formattedValue.Trim().EndsWith('Contact:') ) {
+                                            $testPlan = $testPlan , $rowData.values[0].formattedValue.Trim() , " " -join ""
+                                        } else {
+                                            $testPlan = $testPlan , $rowData.values[0].formattedValue.Trim() , ":`r`n" -join ""
+                                        }
+                                        $testPlan = $testPlan , $rowData.values[1].formattedValue.Trim() , "`r`n" -join ""
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        Write-Host "No spreadsheet content found"
+    }
+} else {
+    Write-Host "No spreadsheet content found"
+}
+Write-Host "Completed getting RFC values from spreadsheet"
+
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$secpasswd = ConvertTo-SecureString $snowpassword -AsPlainText -Force
+$credential = New-Object System.Management.Automation.PSCredential($snowUserid, $secpasswd)
+$description = "This RFC is for $changeDescription `r`n"
+$description = "$description Release sheet link: `r`n $releaseSheetUrl/$spreadsheetid `r`n`r`n Comm link: `r`n`r`n ARR#: $arrNum"
+$releaseSheetUrl = "$releaseSheetUrl/$spreadsheetid";
+if($newChange) {
+    $params = @{"assigned_to" = $assignedTo;
+    "requested_by" = $assignedTo;
+    "u_change_manager" = $changeCoordinator;
+    "category" = "Application";
+    "impact" = $impact;
+    "urgency" = $urgency;
+    "priority" = $priority;
+    "u_environment" = $environment;
+    "justification" = $justification;
+    "u_risk_and_impact_analysis" = $impactAnalysisFieldValue;
+    "test_plan" = $testPlan;
+    "backout_plan" = $backoutPlanList;
+    "implementation_plan" = 'Follow the implementation plan detailed in the attached release sheet';
+    "short_description" = $shortDescription;
+    "description" = $description;
+    "cmdb_ci" = $configuratinItem;
+    "assignment_group" = $assignmentGroup;
+    "start_date" = $rfcStartTime;
+    "u_change_manager_group" = $changeCoordinatorGroup;
+    "end_date" = $rfcEndTime;
+    "u_planned_downtime_start" = $outageStartTime;
+    "u_planned_downtime_end" = $outageEndTime;
+    "requested_by_date" = $rfcEndTime}
+} else {
+    $params = @{"justification" = $justification;
+    "u_risk_and_impact_analysis" = $impactAnalysisFieldValue;
+    "test_plan" = $testPlan;
+    "backout_plan" = $backoutPlanList;
+    "implementation_plan" = 'Follow the implementation plan detailed in the attached release sheet';
+    "start_date" = $rfcStartTime;
+    "end_date" = $rfcEndTime;
+    "u_planned_downtime_start" = $outageStartTime;
+    "u_planned_downtime_end" = $outageEndTime;
+    "u_change_manager_group" = $changeCoordinatorGroup;
+    "urgency" = $urgency;
+    "priority" = $priority;
+    "impact" = $impact;
+    "cmdb_ci" = $configuratinItem;
+    "assignment_group" = $assignmentGroup;
+    "u_change_manager" = $changeCoordinator;
+    "requested_by_date" = $rfcEndTime}
+}
+Write-Host "Payload generated"
+$apiHeaders = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
+$apiHeaders.Add("content-type", "application/json")
+$apiHeaders.Add("Proxy-Authorization", $snowProxy)
+$apiHeaders.Add("apikey", $snowApiKey)
+$apiHeaders.Add("apiKeySecret", $snowApiKeySecret)
+$apiHeaders.Add("Accept", "application/json")  
+if ($newChange) {
+    Write-Host "Calling service now change api to create a new change"
+    try {
+        $rfcCreateResponse = Invoke-RestMethod $snowRFCCreateUrl -Credential $credential -Method POST -Body ($params|ConvertTo-Json) -Headers $apiHeaders
+        $changeId = $rfcCreateResponse.result.number
+        $changeSystemId = $rfcCreateResponse.result.sys_id
+        SendSmtpMail
+        #updateReleaseSheetWithChangeId - Skip now due to a bug
+        attachRelatedChange
+        Write-Host "New change created with change id: $changeId"
+        $snowRFCAttachmentHeaders = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
+        $snowRFCAttachmentHeaders.Add("Proxy-Authorization", $snowProxy)
+        $snowRFCAttachmentHeaders.Add("apikey", $snowApiKey)
+        $snowRFCAttachmentHeaders.Add("apiKeySecret", $snowApiKeySecret)
+        $snowRFCAttachmentHeaders.Add("Accept", "application/json")
+        $snowRFCAttachmentUploadUrl = "${changeAttachmentUrl}&table_sys_id=${changeSystemId}&file_name=${fileName},.xlsx"
+        Write-Host "Calling service now api to attach release sheet with the change"
+        try{
+            if($enableAttachReleaseSheet)
+            {
+                $rfcAttachmentResponse = Invoke-RestMethod -Uri $snowRFCAttachmentUploadUrl -Credential $credential -Method Post -ContentType "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;" -Body $attachmentContent -Headers $snowRFCAttachmentHeaders
+                $rfcAttachmentResponseBody =  $rfcAttachmentResponse | ConvertTo-Json
+                Write-Host "Successfully attached release sheet with the change"    
+            }
+        } catch{
+            $rfcAttachmentResponseCode = $_.Exception.Response.StatusCode.value__
+            Write-Host "Snow api call to attach file with rfc error code : $rfcAttachmentResponseCode"
+            Write-Host "Snow api call to attach file with rfc error message :  $_.Exception"
+        } finally {
+            Remove-Item $exportXlsxFileName
+        }
+    } catch {
+        $in = $_.Exception.Response.StatusCode.value__
+        Write-Host "Snow api call error code : $in"
+        Write-Host "Snow api call error message  : $_.Exception"
+    }
+} else {
+    Write-Host "Calling service now change api to update existing change $changeId"
+    try {
+        $snowRFCGetUrl = $snowRFCCreateUrl+"?number="+$changeId+"&sysparm_fields=sys_id"
+        $rfcGetResponse = Invoke-RestMethod $snowRFCGetUrl -Credential $credential -Method GET -Headers $apiHeaders
+        $changeSystemId = $rfcGetResponse.result.sys_id
+        $rfcUpdateUrl = $snowRFCCreateUrl, "/", $changeSystemId -join ""
+        try {
+            $rfcUpdateResponse = Invoke-RestMethod $rfcUpdateUrl -Credential $credential -Method PUT -Body ($params|ConvertTo-Json) -Headers $apiHeaders
+            Write-Host "Change $changeId is updated with new values"
+            SendSmtpMail
+            attachRelatedChange
+        } catch {
+            $rfcUpdateResponseCode = $_.Exception.Response.StatusCode.value__
+            Write-Host "Snow api call to get rfc data ended with error code : $rfcUpdateResponseCode"
+            Write-Host "Snow api call to get rfc data ended with error message :  $_.Exception"
+        }
+    } catch {
+        $rfcGetResponseCode = $_.Exception.Response.StatusCode.value__
+        Write-Host "Snow api call to get rfc data ended with error code : $rfcGetResponseCode"
+        Write-Host "Snow api call to get rfc data ended with error message :  $_.Exception"
+    }
+}
